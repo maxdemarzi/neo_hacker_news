@@ -2,14 +2,15 @@ package com.maxdemarzi;
 
 import com.maxdemarzi.services.Alchemy;
 import org.codehaus.jackson.map.ObjectMapper;
-import org.neo4j.graphdb.GraphDatabaseService;
-import org.neo4j.graphdb.Node;
-import org.neo4j.graphdb.Transaction;
+import org.neo4j.graphalgo.GraphAlgoFactory;
+import org.neo4j.graphalgo.PathFinder;
+import org.neo4j.graphdb.*;
 import org.neo4j.graphdb.schema.Schema;
 
 import javax.ws.rs.GET;
 import javax.ws.rs.POST;
 import javax.ws.rs.Path;
+import javax.ws.rs.PathParam;
 import javax.ws.rs.core.Context;
 import javax.ws.rs.core.Response;
 import java.io.IOException;
@@ -20,6 +21,16 @@ import java.util.concurrent.TimeUnit;
 public class Service {
 
     private static final ObjectMapper objectMapper = new ObjectMapper();
+
+    private static final PathFinder<org.neo4j.graphdb.Path> SHORTEST_PATH_AUTHORED_LEVEL_ONE =
+            GraphAlgoFactory.shortestPath(
+                    PathExpanders.forTypeAndDirection(RelationshipTypes.AUTHORED, Direction.INCOMING),
+                    1);
+
+    private static final PathFinder<org.neo4j.graphdb.Path> SHORTEST_PATH_COMMENTED_LEVEL_ONE =
+            GraphAlgoFactory.shortestPath(
+                    PathExpanders.forTypeAndDirection(RelationshipTypes.COMMENTED, Direction.INCOMING),
+                    1);
 
     private static final Alchemy alchemy = Alchemy.INSTANCE;
 
@@ -47,6 +58,9 @@ public class Service {
             // Perform Migration
             try (Transaction tx = db.beginTx()) {
                 Schema schema = db.schema();
+                schema.constraintFor(Labels.Page)
+                        .assertPropertyIsUnique("dbpedia")
+                        .create();
                 schema.constraintFor(Labels.Story)
                         .assertPropertyIsUnique("id")
                         .create();
@@ -90,7 +104,99 @@ public class Service {
             alchemy.queue.put((String)input.get("id"));
             return Response.status(Response.Status.CREATED).build();
         }
-
     }
 
+    @POST
+    @Path("/user")
+    public Response createUser(String body, @Context GraphDatabaseService db) throws IOException {
+        HashMap input = Validators.getValidUserInput(body);
+
+        boolean exists = false;
+        try ( Transaction tx = db.beginTx() ) {
+            Node user = db.findNode(Labels.User, "username", input.get("username"));
+
+            if (user == null) {
+                user = db.createNode(Labels.User);
+                user.setProperty("username", input.get("username"));
+            } else {
+                exists = true;
+            }
+
+            tx.success();
+        }
+
+        if (exists) {
+            return Response.status(Response.Status.OK).build();
+        } else {
+            return Response.status(Response.Status.CREATED).build();
+        }
+    }
+
+    @POST
+    @Path("/user/{username}/authored/{storyId}")
+    public Response createAuthored(@PathParam("username") String username,
+                                   @PathParam("storyId") String storyId, @Context GraphDatabaseService db) {
+        boolean exists = false;
+        try ( Transaction tx = db.beginTx() ) {
+            Node user = db.findNode(Labels.User, "username", username);
+            Node story = db.findNode(Labels.Story, "id", storyId);
+
+            if (user == null ) {
+                throw Exception.userNotFound;
+            }
+            if (story == null) {
+                throw Exception.storyNotFound;
+            }
+            tx.acquireWriteLock(user);
+            tx.acquireWriteLock(story);
+
+            if (SHORTEST_PATH_AUTHORED_LEVEL_ONE.findSinglePath(story, user) == null) {
+                user.createRelationshipTo(story, RelationshipTypes.AUTHORED);
+            } else {
+                exists = true;
+            }
+
+            tx.success();
+        }
+
+        if (exists) {
+            return Response.status(Response.Status.OK).build();
+        } else {
+            return Response.status(Response.Status.CREATED).build();
+        }
+    }
+
+    @POST
+    @Path("/user/{username}/commented/{storyId}")
+    public Response createCommented(@PathParam("username") String username,
+                                   @PathParam("storyId") String storyId, @Context GraphDatabaseService db) {
+        boolean exists = false;
+        try ( Transaction tx = db.beginTx() ) {
+            Node user = db.findNode(Labels.User, "username", username);
+            Node story = db.findNode(Labels.Story, "id", storyId);
+
+            if (user == null ) {
+                throw Exception.userNotFound;
+            }
+            if (story == null) {
+                throw Exception.storyNotFound;
+            }
+            tx.acquireWriteLock(user);
+            tx.acquireWriteLock(story);
+
+            if (SHORTEST_PATH_COMMENTED_LEVEL_ONE.findSinglePath(story, user) == null) {
+                user.createRelationshipTo(story, RelationshipTypes.COMMENTED);
+            } else {
+                exists = true;
+            }
+
+            tx.success();
+        }
+
+        if (exists) {
+            return Response.status(Response.Status.OK).build();
+        } else {
+            return Response.status(Response.Status.CREATED).build();
+        }
+    }
 }

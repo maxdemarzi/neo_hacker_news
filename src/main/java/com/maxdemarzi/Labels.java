@@ -5,5 +5,9 @@ import org.neo4j.graphdb.Label;
 
 public enum Labels implements Label {
     Story,
-    Topic
+    Topic,
+    User,
+    Category,
+    Ontology,
+    Page
 }
